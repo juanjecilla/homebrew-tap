@@ -1,0 +1,110 @@
+name: Update mdtolinkedin formula
+
+on:
+  repository_dispatch:
+    types: [mdtolinkedin-release]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get latest release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh release view -R juanjecilla/mdtolinkedin-cli --json tagName -q .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${{ steps.release.outputs.tag }}" \
+            -R juanjecilla/mdtolinkedin-cli \
+            -p "mdtolinkedin-*.tar.gz" \
+            -D artifacts
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          cd artifacts
+          echo "macos_arm=$(shasum -a 256 mdtolinkedin-macos-aarch64.tar.gz | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "macos_x86=$(shasum -a 256 mdtolinkedin-macos-x86_64.tar.gz | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_x86=$(shasum -a 256 mdtolinkedin-linux-x86_64.tar.gz | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          MACOS_ARM_SHA: ${{ steps.sha.outputs.macos_arm }}
+          MACOS_X86_SHA: ${{ steps.sha.outputs.macos_x86 }}
+          LINUX_X86_SHA: ${{ steps.sha.outputs.linux_x86 }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["TAG"]
+          version = tag.lstrip("v")
+          shas = {
+              "mdtolinkedin-macos-aarch64.tar.gz": os.environ["MACOS_ARM_SHA"],
+              "mdtolinkedin-macos-x86_64.tar.gz": os.environ["MACOS_X86_SHA"],
+              "mdtolinkedin-linux-x86_64.tar.gz": os.environ["LINUX_X86_SHA"],
+          }
+
+          path = Path("Formula/mdtolinkedin.rb")
+          lines = path.read_text().splitlines()
+          out = []
+          i = 0
+          while i < len(lines):
+              line = lines[i]
+              if re.match(r"\s*version\s+\"", line):
+                  line = re.sub(r"version\s+\"[^\"]+\"", f"version \"{version}\"", line)
+              if "url \"" in line and "mdtolinkedin-" in line and line.strip().endswith(".tar.gz\""):
+                  line = re.sub(r"releases/download/v[^/]+/", f"releases/download/{tag}/", line)
+                  out.append(line)
+                  match = re.search(r"(mdtolinkedin-[^\"]+\.tar\.gz)", line)
+                  if match and i + 1 < len(lines) and "sha256 \"" in lines[i + 1]:
+                      filename = match.group(1)
+                      sha = shas.get(filename)
+                      if sha:
+                          out.append(re.sub(r"sha256\s+\"[^\"]+\"", f"sha256 \"{sha}\"", lines[i + 1]))
+                          i += 2
+                          continue
+              out.append(line)
+              i += 1
+
+          path.write_text("\n".join(out) + "\n")
+          PY
+
+      - name: Commit and push
+        run: |
+          git add Formula/mdtolinkedin.rb
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          version=$(python3 - <<'PY'
+          import re
+          text = open('Formula/mdtolinkedin.rb').read()
+          match = re.search(r'version\s+"([^"]+)"', text)
+          print(match.group(1) if match else 'unknown')
+          PY
+          )
+          git commit -m "chore: bump mdtolinkedin to ${version}"
+          git push
