@@ -77,15 +77,21 @@ jobs:
                   line = re.sub(r"version\s+\"[^\"]+\"", f"version \"{version}\"", line)
               if "url \"" in line and "mdtolinkedin-" in line and line.strip().endswith(".tar.gz\""):
                   line = re.sub(r"releases/download/v[^/]+/", f"releases/download/{tag}/", line)
-                  out.append(line)
-                  match = re.search(r"(mdtolinkedin-[^\"]+\.tar\.gz)", line)
-                  if match and i + 1 < len(lines) and "sha256 \"" in lines[i + 1]:
+                  match = re.search(r"/(mdtolinkedin-[^/\"]+\.tar\.gz)\"", line)
+                  if match:
                       filename = match.group(1)
                       sha = shas.get(filename)
                       if sha:
-                          out.append(re.sub(r"sha256\s+\"[^\"]+\"", f"sha256 \"{sha}\"", lines[i + 1]))
-                          i += 2
-                          continue
+                          out.append(line)
+                          if i + 1 < len(lines) and re.match(r"\s*version\s+\"", lines[i + 1]) and i + 2 < len(lines) and "sha256 \"" in lines[i + 2]:
+                              out.append(re.sub(r"version\s+\"[^\"]+\"", f"version \"{version}\"", lines[i + 1]))
+                              out.append(re.sub(r"sha256\s+\"[^\"]+\"", f"sha256 \"{sha}\"", lines[i + 2]))
+                              i += 3
+                              continue
+                          if i + 1 < len(lines) and "sha256 \"" in lines[i + 1]:
+                              out.append(re.sub(r"sha256\s+\"[^\"]+\"", f"sha256 \"{sha}\"", lines[i + 1]))
+                              i += 2
+                              continue
               out.append(line)
               i += 1
 
